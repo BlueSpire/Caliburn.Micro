@@ -19,20 +19,34 @@
         private CoreDispatcher dispatcher;
 #else
         private Dispatcher dispatcher;
+#if !NET45
+        private TaskCompletionSource<object> taskSource;
+#endif
 #endif
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="XamlPlatformProvider"/> class.
-        /// </summary>
-        public XamlPlatformProvider() {
+    /// <summary>
+    /// Initializes a new instance of the <see cref="XamlPlatformProvider"/> class.
+    /// </summary>
+    public XamlPlatformProvider() {
 #if SILVERLIGHT
             dispatcher = System.Windows.Deployment.Current.Dispatcher;
 #elif WinRT
             dispatcher = Window.Current.Dispatcher;
 #else
             dispatcher = Dispatcher.CurrentDispatcher;
+#if !NET45
+            dispatcher.ShutdownFinished += (sender, args) =>
+            {
+                var ts = taskSource;
+                if (ts != null)
+                {
+                    taskSource = null;
+                    ts.SetResult(null);
+                }
+            };
 #endif
-        }
+#endif
+    }
 
         /// <summary>
         /// Indicates whether or not the framework is in design-time mode.
@@ -79,18 +93,31 @@
 #elif NET45
             return dispatcher.InvokeAsync(action).Task;
 #else
-            var taskSource = new TaskCompletionSource<object>();
+            var ts = new TaskCompletionSource<object>();
+            taskSource = ts;
             System.Action method = () => {
                 try {
                     action();
-                    taskSource.SetResult(null);
+                    taskSource = null;
+                    ts.SetResult(null);
                 }
                 catch(Exception ex) {
-                    taskSource.SetException(ex);
+                    taskSource = null;
+                    ts.SetException(ex);
                 }
             };
+
+#if SILVERLIGHT
             dispatcher.BeginInvoke(method);
-            return taskSource.Task;
+#else
+            if (dispatcher.BeginInvoke(method).Status == DispatcherOperationStatus.Aborted)
+            {
+                taskSource = null;
+                ts.SetResult(null);
+            }
+#endif
+
+            return ts.Task;
 #endif
         }
 
